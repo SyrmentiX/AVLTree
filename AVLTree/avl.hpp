@@ -16,33 +16,32 @@ namespace fefu {
 		END = 2
 	};
 
-	template <typename T>
+	template <typename T, typename K>
 	class node {
 	public:
-
 		status node_status;
 		std::size_t ref_count = 0;
 		int height = 0;
 		T value;
+		K key;
 		node *left, *right, *parent;
 
-		node(status state) : node_status(state), value() {
+		node(status state) : node_status(state), value(), key() {
 			left = nullptr;
 			right = nullptr;
 			parent = nullptr;
 		}
 
-		node(T value, status state) : node(state) {
-			this->value = value;
+		node(T value, K key, status state) : node(state), value(value), key(key) {
 		}
 
-		node(T value): value(value), node_status(status::ACTIVE){
+		node(T value, K key): value(value), key(key), node_status(status::ACTIVE){
 			left = nullptr;
 			right = nullptr;
 			parent = nullptr;
 		}
 
-		node(T value, node* parent) : node(value) {
+		node(T value, K key, node* parent) : node(value, key) {
 			this->parent = parent;
 		}
 		
@@ -83,27 +82,28 @@ namespace fefu {
 		}
 	};
 
-	template <typename T>
-	class avl_iterator {
+	template <typename T, typename K>
+	class AVLIterator {
 	public:
 		using iterator_category = std::forward_iterator_tag;
 		using value_type = T;
+		using key_type = K;
 		using difference_type = std::ptrdiff_t;
 		using reference = value_type&;
 		using pointer = value_type*;
 
-		template <typename T,
+		template <typename T, typename K,
 			typename Compare = std::less<T>>
 		friend class AVLTree;
 
-		avl_iterator() noexcept {}
+		AVLIterator() noexcept {}
 
-		avl_iterator(const avl_iterator& other) noexcept {
+		AVLIterator(const AVLIterator& other) noexcept {
 			value = other.value;
 			value->increase_ref();
 		}
 
-		~avl_iterator() {
+		~AVLIterator() {
 			if (value) {
 				value->decrease_ref();
 				if (!value->is_ref()) {
@@ -112,12 +112,12 @@ namespace fefu {
 			}
 		}
 
-		avl_iterator& operator=(avl_iterator& other) {
-			*this = avl_iterator(other);
+		AVLIterator& operator=(AVLIterator& other) {
+			*this = AVLIterator(other);
 			return *this;
 		}
 
-		avl_iterator& operator=(avl_iterator&& other) {
+		AVLIterator& operator=(AVLIterator&& other) {
 			value->decrease_ref();
 			value->remove();
 			value = other.value;
@@ -133,13 +133,13 @@ namespace fefu {
 			return &this->value->value;
 		}
 
-		avl_iterator &operator++() {
+		AVLIterator &operator++() {
 			if (value->node_status != status::END) {
-				node<value_type>* prev_value = value;
+				node<value_type, key_type>* prev_value = value;
 				value->decrease_ref();
 				if (value->right) {
 					value = value->right;
-					while (value->left) {
+					while (value->left && prev_value->key < value->left->key) {
 						value = value->left;
 					}
 				} else if (value->parent) {
@@ -164,29 +164,29 @@ namespace fefu {
 		}
 
 		// postfix ++
-		avl_iterator operator++(int) {
-			avl_iterator temp = *this;
+		AVLIterator operator++(int) {
+			AVLIterator temp = *this;
 			++*this;
 			return temp;
 		}
 
-		bool operator==(const avl_iterator& other) {
+		bool operator==(const AVLIterator& other) {
 			return other.value == this->value;
 		}
 
-		bool operator!=(const avl_iterator& other) {
+		bool operator!=(const AVLIterator& other) {
 			return other.value != this->value;
 		}
 
 	private:
-		node<value_type>* value = nullptr;
+		node<value_type, key_type>* value = nullptr;
 
-		avl_iterator(node<value_type>* value) noexcept : value(value) {
+		AVLIterator(node<value_type, key_type>* value) noexcept : value(value) {
 			value->increase_ref();
 		}
 	};
 
-	template <typename T,
+	template <typename T, typename K,
 		typename Compare = std::less<T>>
 	class AVLTree {
 	public:
@@ -195,12 +195,13 @@ namespace fefu {
 		using bf_type = int;
 		using value_compare = Compare;
 		using map_type = T;
-		using value_type = node<map_type>;
+		using key_type = K;
+		using value_type = node<map_type, key_type>;
 		using reference = map_type&;
 		using const_reference = const map_type&;
-		using iterator = avl_iterator<map_type>;
+		using iterator = AVLIterator<map_type, key_type>;
 
-		AVLTree(std::initializer_list<map_type> list) : AVLTree() {
+		AVLTree(std::initializer_list<std::pair<map_type, key_type>> list) : AVLTree() {
 			insert(list);
 		}
 
@@ -258,11 +259,11 @@ namespace fefu {
 			return iterator(current);
 		}
 
-		void insert(map_type value) {
-			value_type *parent_node = find_node(value);
-			if (parent_node->value != value || parent_node->node_status == status::END) {
-				value_type* new_node = new value_type(value, parent_node);
-				if (_compare(new_node->value, parent_node->value)) {
+		void insert(map_type value, key_type key) {
+			value_type *parent_node = find_node(key);
+			if (parent_node->key != key || parent_node->node_status == status::END) {
+				value_type* new_node = new value_type(value, key, parent_node);
+				if (_compare(new_node->key, parent_node->key)) {
 					parent_node->left = new_node;
 				} else {
 					parent_node->right = new_node;
@@ -276,24 +277,28 @@ namespace fefu {
 			}
 		}
 
-		void insert(std::initializer_list<map_type> list) {
+		void insert(std::pair<map_type, key_type> pair) {
+			insert(pair.first, pair.second);
+		}
+
+		void insert(std::initializer_list<std::pair<map_type, key_type>> list) {
 			for (auto& it : list) {
 				insert(it);
 			}
 		}
 
-		iterator find(map_type value) {
-			auto it = iterator(find_node(value));
-			if (*it != value) {
+		iterator find(key_type key) {
+			auto it = iterator(find_node(key));
+			if (it.value->key != key) {
 				return end();
 			}
 			return it;
 		}
 
-		void erase(map_type value) {
+		void erase(key_type key) {
 			if (!empty()) {
-				value_type* unit = find_node(value);
-				if (unit->value == value && unit->node_status == status::ACTIVE) {
+				value_type* unit = find_node(key);
+				if (unit->key == key && unit->node_status == status::ACTIVE) {
 					--set_size;
 					value_type* lower_unit = unit;
 					
@@ -583,10 +588,10 @@ namespace fefu {
 			}
 		}
 		
-		value_type *find_node(map_type value) {
+		value_type *find_node(key_type key) {
 			value_type *current = root;
-			while (current && current->value != value) {
-				if (_compare(value, current->value)) {
+			while (current && current->key != key) {
+				if (_compare(key, current->key)) {
 					if (!current->left) {
 						return current;
 					}

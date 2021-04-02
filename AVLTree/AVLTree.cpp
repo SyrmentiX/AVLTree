@@ -7,11 +7,11 @@ using namespace fefu;
 
 TEST_CASE("TEST") {
 	SECTION("INSERT TEST") {
-		AVLTree<int> tree({ 5, 10, 15, 20, 25, 30, 35 });
-		tree.insert(40);
-		tree.insert(45);
-		tree.insert(50);
-		tree.insert(55);
+		AVLTree<int, int> tree({ {5,5}, {10,10}, {15,15}, {20,20}, {25,25}, {30,30}, {35,35} });
+		tree.insert(40, 40);
+		tree.insert(45, 45);
+		tree.insert(50, 50);
+		tree.insert({55, 55});
 		REQUIRE(tree.size() == 11);
 		auto it = tree.begin();
 		REQUIRE(*tree.find(5) == *it);
@@ -39,7 +39,7 @@ TEST_CASE("TEST") {
 		REQUIRE(*it == *tree.end());
 	}
 	SECTION("DELETE TEST") {
-		AVLTree<int> tree({ 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55 });
+		AVLTree<int, int> tree({ {5,5}, {10,10}, {15,15}, {20,20}, {25,25}, {30,30}, {35,35}, {40,40}, {45,45}, {50,50}, {55,55} });
 		if (true) {
 			auto it1 = tree.find(20);
 			tree.erase(20);
@@ -47,9 +47,9 @@ TEST_CASE("TEST") {
 			tree.erase(30);
 			++it1;
 		}
-		tree.insert(20);
-		tree.insert(25);
-		tree.insert(30);
+		tree.insert(20, 20);
+		tree.insert(25, 25);
+		tree.insert(30, 30);
 
 		auto it2 = tree.find(40);
 		tree.erase(40);
@@ -74,25 +74,44 @@ TEST_CASE("TEST") {
 			++it1;
 		}
 
-		tree.insert({ 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55 });
+		tree.insert({ {5,5}, {10,10}, {15,15}, {20,20}, {25,25}, {30,30}, {35,35}, {40,40}, {45,45}, {50,50}, {55,55} });
 		it2 = tree.find(20);
 		tree.clear();
 	}
 
 	SECTION("CONSISTENCY") {
+		AVLTree<int, int> tree;
+		AVLIterator<int, int> iter;
+		tree.insert(std::pair<int, int>(2, 1));
+		tree.insert(std::pair<int, int>(4, 3));
+		tree.insert(std::pair<int, int>(6, 5));
+
+		iter = tree.begin();
+		iter++;
+
+		REQUIRE(*iter == 4);
+
+		tree.erase(3);
+
+		iter++;
+
+		REQUIRE(*iter == 6);
+	}
+
+	SECTION("RANDOM CONSISTENCY") {
 		int n = 5000;
 		srand(time(0));
-		AVLTree<int> tree;
+		AVLTree<int, int> tree;
 
 		for (int i = 0; i < n; ++i) {
 			int value = rand() % n;
-			tree.insert(value);
+			tree.insert(value, i);
 		}
 
-		std::vector<avl_iterator<int>> its;
+		std::vector<AVLIterator<int, int>> its;
 
 		for (int i = 0; i < n; ++i) {
-			avl_iterator<int> iter = tree.begin();
+			AVLIterator<int, int> iter = tree.begin();
 			int m = std::rand() % (n / 2);
 
 			for (int j = 1; j < m; ++j) {
@@ -105,7 +124,7 @@ TEST_CASE("TEST") {
 
 		for (int i = 0; i < n; ++i) {
 			int value = std::rand() % n;
-			tree.erase(value);
+			tree.erase(i);
 		}
 
 		for (auto it : its) {
