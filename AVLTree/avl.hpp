@@ -32,8 +32,7 @@ namespace fefu {
 			parent = nullptr;
 		}
 
-		node(T value, K key, status state) : node(state), value(value), key(key) {
-		}
+		node(T value, K key, status state) : node(state), value(value), key(key) {}
 
 		node(T value, K key): value(value), key(key), node_status(status::ACTIVE){
 			left = nullptr;
