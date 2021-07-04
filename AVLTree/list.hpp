@@ -32,11 +32,12 @@ namespace fefu {
 		std::atomic<std::size_t> ref_count = 0;
 		std::shared_mutex mutex;
 		T value;
-		list_node *left, *right;
+		list_node *left, *right, *purge_left;
 		
 		list_node(status state) : node_status(state), value(){
 			left = nullptr;
 			right = nullptr;
+			purge_left = nullptr;
 		}
 
 		list_node(T value, status state) : list_node(state), value(value){}
@@ -44,6 +45,7 @@ namespace fefu {
 		list_node(T value) : value(value), node_status(status::ACTIVE) {
 			left = nullptr;
 			right = nullptr;
+			purge_left = nullptr;
 		}
 
 		bool is_ref() {
@@ -171,9 +173,8 @@ namespace fefu {
 
 		void inner_plus() {
 			if (value != nullptr && value->node_status != status::END) {
-				std::unique_lock<std::shared_mutex> lock_cur(value->mutex);
+				std::shared_lock<std::shared_mutex> lock_cur(value->mutex);
 				auto* right = value->right;
-				std::unique_lock<std::shared_mutex> lock_right(right->mutex);
 
 				auto* prev_value = value;
 				value = value->right;
@@ -279,6 +280,7 @@ namespace fefu {
 		private:
 			value_type* root = nullptr;
 			value_type* last = nullptr;
+			value_type* purgatory = nullptr;
 			std::atomic<size_type> list_size = 0;
 
 			void push_front_inner(list_type value) {

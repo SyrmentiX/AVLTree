@@ -163,7 +163,6 @@ TEST_CASE("TEST") {
 			int threadsAmount = 2;
 			int numberOfElements = 500000;
 
-
 			std::vector<std::thread> threads;
 
 			auto startThreaded = std::chrono::high_resolution_clock::now();
@@ -194,10 +193,14 @@ TEST_CASE("TEST") {
 			for (int k = 0; k < threadsAmount; ++k) {
 				threads[k].join();
 			}
+
+			REQUIRE(list.size() >= threadsAmount * (numberOfElements / 2));
+
+			auto endThreaded = std::chrono::high_resolution_clock::now();
+			auto timeThreaded = std::chrono::duration_cast<std::chrono::milliseconds>(endThreaded - startThreaded);
+			
+			std::cout << (double)timeThreaded.count() / 1000.0 << std::endl;
 			break;
-			//auto endThreaded = std::chrono::high_resolution_clock::now();
-			//auto timeThreaded = std::chrono::duration_cast<std::chrono::milliseconds>(endThreaded - startThreaded);
-			//std::cout << (double)timeThreaded.count() / 1000.0 << std::endl;
 		}
 	}
 }
