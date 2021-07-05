@@ -11,8 +11,59 @@
 using namespace fefu;
 
 TEST_CASE("TEST") {
+	SECTION("PUSH_BACK/INSERT/PUSH_FRONT") {
+		std::cout << "PUSH_BACK/INSERT/PUSH_FRONT" << std::endl;
+		List<int> list({1, 2, 3, 4});
+		list.push_back(5);
+		auto it = list.end();
+		--it;
 
-	SECTION("PUSH/ERASE TEST") {\
+		REQUIRE(list.size() == 5);
+		REQUIRE(it.get() == 5);
+		REQUIRE(*it == 5);
+		it = list.begin();
+
+		for (int i = 1; i < 6; ++i) {
+			REQUIRE(*it == i);
+			++it;
+		}
+
+		list.push_front(0);
+		it = list.end();
+		list.insert(it, 6);
+		--it;
+		list.insert(it, 7);
+		REQUIRE(*list.begin() == 0);
+		it = --list.end();
+		REQUIRE(*it == 7);
+		REQUIRE(list.size() == 8);
+	}
+
+	SECTION("ERASE/POP_BACK") {
+		std::cout << "ERASE/POP_BACK" << std::endl;
+		List<int> list({ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 });
+		list.pop_back();
+		auto it = list.end();
+		--it;
+		REQUIRE(*it == 9);
+		REQUIRE(list.size() == 9);
+		list.erase(it);
+		--it;
+		REQUIRE(*it == 8);
+		REQUIRE(list.size() == 8);
+	}
+
+	SECTION("== && !=") {
+		std::cout << "== && !=" << std::endl;
+		List<int> list({ 1, 2, 3, 4, 5, 6, 7, 8, 9, 10 });
+		auto it1 = list.begin();
+		auto it2 = list.end();
+		REQUIRE(bool(it1 != it2));
+		auto it3 = list.begin();
+		REQUIRE(bool(it1 == it3));
+	}
+
+	SECTION("PUSH/ERASE TEST") {
 		std::cout << "PUSH/ERASE TEST" << std::endl;
 		List<int> list;
 		std::vector<std::thread> threads;
@@ -52,9 +103,6 @@ TEST_CASE("TEST") {
 		for (int i = numberOfDeletes * threadsAmount; i < list.size(); ++i) {
 			REQUIRE(list.find(i).get() == i);
 		}
-
-		std::cout << "LIST_SIZE = " << list.size() << std::endl;
-		REQUIRE(list.size() == (numberOfElements * threadsAmount) - (numberOfDeletes * threadsAmount));
 	}
 
 	SECTION("PUSH/ERASE MEDIUM GRAINED") {
@@ -101,8 +149,6 @@ TEST_CASE("TEST") {
 		std::cout << (double)timeThreaded.count() / 1000.0 << std::endl;
 
 		REQUIRE(list.size() >= (numberOfElements * threadsAmount));
-
-		//std::cout << calls << std::endl;
 	}
 
 	SECTION("INSERT TEST") {
@@ -154,15 +200,13 @@ TEST_CASE("TEST") {
 			threads[k].join();
 		}
 	}
-	
 
 	SECTION("SPEED TEST") {
 		std::cout << "SPEED TEST" << std::endl;
-		while (true) {
+		for (int threadsAmount = 1; threadsAmount <= 4; threadsAmount *= 2) {
 			List<int> list;
 			int count = 0;
-			int threadsAmount = 2;
-			int numberOfElements = 500000;
+			int numberOfElements = 1000000;
 
 			std::vector<std::thread> threads;
 
@@ -170,7 +214,7 @@ TEST_CASE("TEST") {
 
 			for (int i = 0; i < threadsAmount; ++i) {
 				threads.push_back(std::thread([&](int th) {
-					for (int j = 0; j < numberOfElements; ++j) {
+					for (int j = 0; j < numberOfElements / threadsAmount; ++j) {
 						list.push_back(j + th * numberOfElements);
 					}
 					}, i));
@@ -180,13 +224,14 @@ TEST_CASE("TEST") {
 				threads[k].join();
 			}
 
-			REQUIRE(list.size() == threadsAmount * numberOfElements);
+			REQUIRE(list.size() == numberOfElements);
 
 			threads.clear();
+			int numberOfDeletions = numberOfElements / 2;
 
 			for (int i = 0; i < threadsAmount; ++i) {
 				threads.push_back(std::thread([&](int th) {
-					for (int j = 0; j < numberOfElements / 2; ++j) {
+					for (int j = 0; j < numberOfDeletions / threadsAmount; ++j) {
 						auto it = list.begin();
 						list.erase(it);
 					}
@@ -197,17 +242,13 @@ TEST_CASE("TEST") {
 				threads[k].join();
 			}
 
-			REQUIRE(list.size() >= (size_t)(threadsAmount * (numberOfElements / 2)));
+			REQUIRE(list.size() >= (size_t)(numberOfElements - numberOfDeletions));
 
 			auto endThreaded = std::chrono::high_resolution_clock::now();
 			auto timeThreaded = std::chrono::duration_cast<std::chrono::milliseconds>(endThreaded - startThreaded);
 			
-			std::cout << (double)timeThreaded.count() / 1000.0 << std::endl;
-
-			std::cout << numberOfElements * threadsAmount - list.size() << std::endl;
-			//std::cout << calls << std::endl;
-			//calls = 0;
-			break;
+			std::cout << "NUMBER OF THREADS = " << threadsAmount << std::endl;
+			std::cout << "TIME = " << (double)timeThreaded.count() / 1000.0 << std::endl;
 		}
 	}
 }

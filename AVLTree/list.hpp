@@ -19,37 +19,34 @@ namespace fefu {
 		BEGIN = 3
 	};
 
-	//static std::atomic<int> calls = 0;
-
 	template <typename T>
 	class list_node {
 	private:
 		template <typename G>
-			friend class ListIterator;
+		friend class ListIterator;
 
 		template <typename G>
-			friend class List;
+		friend class List;
 
 		std::atomic<status> node_status;
+		T value;
+		list_node* left, * right;
 		std::atomic<std::size_t> ref_count = 0;
 		std::shared_mutex mutex;
-		T value;
-		list_node *left, *right, *purge_left;
-		
-		list_node(status state) : node_status(state), value(){
+
+
+		list_node(status state) : node_status(state), value() {
 			left = nullptr;
 			right = nullptr;
-			purge_left = nullptr;
 		}
 
-		list_node(T value, status state) : list_node(state){
+		list_node(T value, status state) : list_node(state) {
 			this->value = value;
 		}
 
-		list_node(T value) : value(value), node_status(status::ACTIVE) {
+		list_node(T value) : node_status(status::ACTIVE), value(value) {
 			left = nullptr;
 			right = nullptr;
-			purge_left = nullptr;
 		}
 
 		bool is_ref() {
@@ -79,9 +76,8 @@ namespace fefu {
 			std::vector<list_node<T>*> stack;
 			stack.push_back(left);
 			stack.push_back(right);
-			
+
 			delete this;
-			//++calls; // debug info
 
 			while (!stack.empty()) {
 				auto* unit = stack.back();
@@ -90,11 +86,10 @@ namespace fefu {
 					std::unique_lock<std::shared_mutex> lock(unit->mutex);
 					unit->decrease_ref();
 					if (!unit->is_ref() && unit->node_status == status::DELETED) {
+						lock.unlock();
 						stack.push_back(unit->left);
 						stack.push_back(unit->right);
 						delete unit;
-
-						//++calls; // debug info
 					}
 				}
 			}
@@ -111,46 +106,59 @@ namespace fefu {
 		using pointer = value_type*;
 
 		template <typename G>
-			friend class List;
+		friend class List;
 
 		ListIterator(const ListIterator& other) noexcept {
 			std::unique_lock<std::shared_mutex> lock(other.value->mutex);
 			value = other.value;
 			value->increase_ref();
 		}
-		
+
 		~ListIterator() {
 			value->release();
 		}
 
+		reference operator*() const {
+			std::shared_lock<std::shared_mutex> lock(value->mutex);
+			return value->value;
+		}
+
 		ListIterator& operator=(const ListIterator& other) {
 			std::unique_lock<std::shared_mutex> lock(value->mutex);
-			std::unique_lock<std::shared_mutex> lock_other;
-			if (value != other.value) {
-				lock_other = std::unique_lock<std::shared_mutex>(other.value->mutex);
+
+			if (value == other.value) {
+				return *this;
 			}
+
+			std::unique_lock<std::shared_mutex> lock_other(other.value->mutex);
+
 			auto* prev_value = value;
 			value = other.value;
 			value->increase_ref();
 
 			lock_other.unlock();
-			prev_value->release();
+			lock.unlock();
 
+			prev_value->release();
 			return *this;
 		}
 
 		ListIterator& operator=(ListIterator&& other) {
 
 			std::unique_lock<std::shared_mutex> lock(value->mutex);
-			std::unique_lock<std::shared_mutex> lock_other;
-			if (value != other.value) {
-				lock_other = std::unique_lock<std::shared_mutex>(other.value->mutex);
+
+			if (value == other.value) {
+				return *this;
 			}
+
+			std::unique_lock<std::shared_mutex> lock_other(other.value->mutex);
 			auto* prev_value = value;
 			value = other.value;
 			value->increase_ref();
-			
+
 			lock_other.unlock();
+			lock.unlock();
+
 			prev_value->release();
 
 			return *this;
@@ -181,6 +189,17 @@ namespace fefu {
 			return temp;
 		}
 
+		ListIterator& operator--() {
+			inner_minus();
+			return *this;
+		}
+
+		ListIterator operator--(int) {
+			ListIterator temp = *this;
+			inner_minus();
+			return temp;
+		}
+
 		bool operator==(const ListIterator& other) {
 			return other.value == this->value;
 		}
@@ -193,14 +212,27 @@ namespace fefu {
 		list_node<value_type>* value = nullptr;
 
 		void inner_plus() {
-			if (value != nullptr && value->node_status != status::END) {
+			if (value && value->node_status != status::END) {
 				list_node<value_type>* prev_value = nullptr;
 				{
-					std::shared_lock<std::shared_mutex> lock_cur(value->mutex);
-					auto* right = value->right;
+					std::unique_lock<std::shared_mutex> lock_cur(value->mutex);
 
 					prev_value = value;
 					value = value->right;
+					value->increase_ref();
+				}
+				prev_value->release();
+			}
+		}
+
+		void inner_minus() {
+			if (value && value->node_status != status::BEGIN) {
+				list_node<value_type>* prev_value = nullptr;
+				{
+					std::unique_lock<std::shared_mutex> lock_cur(value->mutex);
+
+					prev_value = value;
+					value = value->left;
 					value->increase_ref();
 				}
 				prev_value->release();
@@ -214,223 +246,218 @@ namespace fefu {
 	};
 
 	template <typename T>
-		class List {
-		public:
-			using size_type = std::size_t;
-			using list_type = T;
-			using value_type = list_node<list_type>;
-			using reference = list_type&;
-			using const_reference = const list_type&;
-			using iterator = ListIterator<list_type>;
+	class List {
+	public:
+		using size_type = std::size_t;
+		using list_type = T;
+		using value_type = list_node<list_type>;
+		using reference = list_type&;
+		using const_reference = const list_type&;
+		using iterator = ListIterator<list_type>;
 
-			List(std::initializer_list<list_type> list) : List() {
-				push_back(list);
-			}
+		List(std::initializer_list<list_type> list) : List() {
+			for (auto it : list)
+				push_back(it);
+		}
 
-			List() {
-				last = new value_type(status::END);
-				root = new value_type(status::BEGIN);
-				last->left = root;
-				root->right = last;
-			}
+		List() {
+			last = new value_type(status::END);
+			root = new value_type(status::BEGIN);
 
-			~List() {
-				value_type* current = root;
-				std::vector<value_type*> stack;
-				while (current != last) {
-					stack.push_back(current);
-					current = current->right;
-				}
-				while (!stack.empty()) {
-					delete stack.back();
-					stack.back() = nullptr;
-					stack.pop_back();
-				}
+			last->increase_ref();
+			root->increase_ref();
 
-				delete current;
-				current = nullptr;
-			}
+			last->left = root;
+			root->right = last;
+		}
 
-			bool empty() {
-				return list_size == 0;
-			}
-
-			size_type size() {
-				return list_size;
-			}
-
-			iterator begin() {
-				std::unique_lock<std::shared_mutex> lock_root(root->mutex);
-				std::unique_lock<std::shared_mutex> lock(root->right->mutex);
-				return iterator(root->right);
-			}
-
-			iterator end() {
-				std::unique_lock<std::shared_mutex> lock = std::unique_lock<std::shared_mutex>(last->mutex);
-				return iterator(last);
-			}
-
-			void push_front(list_type value) {
-				push_front_inner(value);
-			}
-
-			void push_back(list_type value) {
-				push_back_inner(value);
-			}
-
-			void insert(iterator& it, list_type value) {
-				insert_inner(it, value);
-			}
-
-			iterator find(list_type value) {
-				return find_inner(value);
-			}
-
-			void erase(iterator &it) {
-				erase_inner(it);
-			}
-
-			void pop_back() {
-				if (!empty()) {
-					std::unique_lock<std::shared_mutex> lock = std::unique_lock<std::shared_mutex>(last->mutex);
-					auto it = iterator(last->left);
-					lock.unlock();
-					erase_inner(it);
-				}
-			}
-
-		private:
-			value_type* root = nullptr;
-			value_type* last = nullptr;
-			value_type* purgatory = nullptr;
-			std::atomic<size_type> list_size = 0;
-
-			void push_front_inner(list_type value) {
-				std::unique_lock<std::shared_mutex> lock_root_write(root->mutex);
-				auto* rightR = root->right;
-				std::unique_lock<std::shared_mutex> lock_right(rightR->mutex);
-
-				value_type* new_node = new value_type(value);
-				new_node->left = root;
-				new_node->right = rightR;
-
-				rightR->left = new_node;
-				root->right = new_node;
-				++list_size;
-			}
-
-			void push_back_inner(list_type value) {
-				value_type* left = nullptr;
-				for (bool retry = true; retry;) {
-					{
-						std::unique_lock<std::shared_mutex> lock(last->mutex);
-						left = last->left;
-						left->increase_ref();
-					}
-
-					{
-						std::unique_lock<std::shared_mutex> lock_left(left->mutex);
-						std::unique_lock<std::shared_mutex> lock(last->mutex);
-
-						if (left->right == last && last->left == left) {
-							value_type* new_node = new value_type(value);
-							new_node->left = left;
-							new_node->right = last;
-
-							left->right = new_node;
-							last->left = new_node;
-
-							++list_size;
-
-							retry = false;
-						} 
-						
-					}
-					
-					left->release();
-				}
-			}
-
-			void insert_inner(iterator& it, list_type value) {
-				value_type* left = it.value;
-				if (left->node_status == status::END) {
-					push_back_inner(value);
-				} else if (left->node_status == status::BEGIN) {
-					push_front_inner(value);
-				} else {
-					std::unique_lock<std::shared_mutex> lock_left(left->mutex);
-					if (left->node_status == status::DELETED)
-						return;
-
-					value_type* right = left->right;
-					std::unique_lock<std::shared_mutex> lock_right(right->mutex);
-
-					value_type* new_node = new value_type(value);
-					new_node->left = left;
-					new_node->right = right;
-
-					left->right = new_node;
-					last->left = new_node;
-
-					++list_size;
-				}
-			}
-
-			iterator find_inner(list_type value) {
-				value_type* current = root;
-				std::shared_lock<std::shared_mutex> guard_cur(current->mutex);
+		~List() {
+			value_type* current = root;
+			std::vector<value_type*> stack;
+			while (current != last) {
+				stack.push_back(current);
 				current = current->right;
-				while (current != last && current->value != value) {
-					guard_cur = std::shared_lock<std::shared_mutex>(current->mutex);
-					current = current->right;
-				}
-				return iterator(current);
+			}
+			while (!stack.empty()) {
+				delete stack.back();
+				stack.back() = nullptr;
+				stack.pop_back();
 			}
 
-			void erase_inner(iterator& it) {
-				value_type* node = it.value;
+			delete current;
+			current = nullptr;
+		}
 
-				if (empty() || node->node_status != status::ACTIVE)
+		bool empty() {
+			return list_size == 0;
+		}
+
+		size_type size() {
+			return list_size;
+		}
+
+		iterator begin() {
+			std::unique_lock<std::shared_mutex> lock_root(root->mutex);
+			return iterator(root->right);
+		}
+
+		iterator end() {
+			std::unique_lock<std::shared_mutex> lock(last->mutex);
+			return iterator(last);
+		}
+
+		void push_front(list_type value) {
+			std::unique_lock<std::shared_mutex> lock_root_write(root->mutex);
+			auto* rightR = root->right;
+			std::unique_lock<std::shared_mutex> lock_right(rightR->mutex);
+
+			value_type* new_node = new value_type(value);
+			new_node->left = root;
+			new_node->right = rightR;
+			new_node->increase_ref();
+			new_node->increase_ref();
+
+
+			rightR->left = new_node;
+			root->right = new_node;
+			++list_size;
+		}
+
+		void push_back(list_type value) {
+			value_type* left = nullptr;
+			for (bool retry = true; retry;) {
+				{
+					std::unique_lock<std::shared_mutex> lock(last->mutex);
+					left = last->left;
+					left->increase_ref();
+				}
+
+				{
+					std::unique_lock<std::shared_mutex> lock_left(left->mutex);
+					std::unique_lock<std::shared_mutex> lock(last->mutex);
+
+					if (left->right == last && last->left == left) {
+						value_type* new_node = new value_type(value);
+						new_node->left = left;
+						new_node->right = last;
+						new_node->increase_ref();
+						new_node->increase_ref();
+
+
+						left->right = new_node;
+						last->left = new_node;
+
+						++list_size;
+
+						retry = false;
+					}
+
+				}
+
+				left->release();
+			}
+		}
+
+		void insert(iterator& it, list_type value) {
+			value_type* left = it.value;
+			if (left->node_status == status::END) {
+				push_back(value);
+			}
+			else if (left->node_status == status::BEGIN) {
+				push_front(value);
+			}
+			else {
+				std::unique_lock<std::shared_mutex> lock_left(left->mutex);
+				if (left->node_status == status::DELETED)
 					return;
 
-				value_type* left = nullptr;
-				value_type* right = nullptr;
+				value_type* right = left->right;
+				std::unique_lock<std::shared_mutex> lock_right(right->mutex);
 
-				for (bool retry = true; retry;) {
-					{
-						std::shared_lock<std::shared_mutex> lock(node->mutex);
-						if (node->node_status == status::DELETED)
-							return;
+				value_type* new_node = new value_type(value);
+				new_node->left = left;
+				new_node->right = right;
+				new_node->increase_ref();
+				new_node->increase_ref();
 
-						left = node->left;
-						left->increase_ref();
+				left->right = new_node;
+				last->left = new_node;
 
-						right = node->right;
-						right->increase_ref();
-					}
-
-					{
-						std::unique_lock<std::shared_mutex> lock_left(left->mutex);
-						std::shared_lock<std::shared_mutex> lock(node->mutex);
-						std::unique_lock<std::shared_mutex> lock_right(right->mutex);
-
-						if (left->right == node && right->left == node) {
-
-							left->right = right;
-							right->left = left;
-
-							node->node_status = status::DELETED;
-							left->increase_ref();
-							right->increase_ref();
-
-							--list_size;
-							retry = false;
-						}
-					}
-
-					left->release();
-					right->release();
-				}
+				++list_size;
 			}
+		}
+
+		iterator find(list_type value) {
+			value_type* current = root;
+			std::shared_lock<std::shared_mutex> lock(current->mutex);
+			current = current->right;
+			while (current != last && current->value != value) {
+				lock = std::shared_lock<std::shared_mutex>(current->mutex);
+				current = current->right;
+			}
+			return iterator(current);
+		}
+
+		void erase(iterator it) {
+			value_type* node = it.value;
+
+			if (empty() || node->node_status != status::ACTIVE)
+				return;
+
+			value_type* left = nullptr;
+			value_type* right = nullptr;
+
+			for (bool retry = true; retry;) {
+				{
+					std::shared_lock<std::shared_mutex> lock(node->mutex);
+					if (node->node_status == status::DELETED)
+						return;
+
+					left = node->left;
+					left->increase_ref();
+
+					right = node->right;
+					right->increase_ref();
+				}
+
+				{
+					std::unique_lock<std::shared_mutex> lock_left(left->mutex);
+					std::shared_lock<std::shared_mutex> lock(node->mutex);
+					std::unique_lock<std::shared_mutex> lock_right(right->mutex);
+
+					if (left->right == node && right->left == node) {
+						node->node_status = status::DELETED;
+						node->decrease_ref();
+						node->decrease_ref();
+
+						left->right = right;
+						right->left = left;
+
+						left->increase_ref();
+						right->increase_ref();
+
+						--list_size;
+						retry = false;
+					}
+				}
+
+				left->release();
+				right->release();
+			}
+		}
+
+		void pop_back() {
+			if (!empty()) {
+				std::unique_lock<std::shared_mutex> lock(last->mutex);
+				auto it = iterator(last->left);
+				lock.unlock();
+				erase(it);
+			}
+		}
+
+	private:
+		value_type* root = nullptr;
+		value_type* last = nullptr;
+		std::atomic<size_type> list_size = 0;
 	};
 }
