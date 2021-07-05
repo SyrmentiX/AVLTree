@@ -12,7 +12,7 @@ using namespace fefu;
 
 TEST_CASE("TEST") {
 
-	/*SECTION("PUSH/ERASE TEST") {\
+	SECTION("PUSH/ERASE TEST") {\
 		std::cout << "PUSH/ERASE TEST" << std::endl;
 		List<int> list;
 		std::vector<std::thread> threads;
@@ -102,58 +102,58 @@ TEST_CASE("TEST") {
 
 		REQUIRE(list.size() >= (numberOfElements * threadsAmount));
 
-		std::cout << calls << std::endl;
-	}*/
+		//std::cout << calls << std::endl;
+	}
 
-	//SECTION("INSERT TEST") {
-	//	std::cout << "INSERT/ITERATE TEST" << std::endl;
-	//	List<int> list;
-	//	int count = 0;
-	//	int threadsAmount = 2;
-	//	int numberOfElements = 100;
+	SECTION("INSERT TEST") {
+		std::cout << "INSERT/ITERATE TEST" << std::endl;
+		List<int> list;
+		int count = 0;
+		int threadsAmount = 2;
+		int numberOfElements = 100;
 
-	//	std::vector<std::thread> threads;
+		std::vector<std::thread> threads;
 
-	//	auto startThreaded = std::chrono::high_resolution_clock::now();
-	//	
-	//	for (int i = 0; i < threadsAmount; ++i) {
-	//		threads.push_back(std::thread([&](int th) {
-	//			for (int j = 0; j < numberOfElements; ++j) {
-	//				auto it = list.begin();
-	//				list.insert(it, j + th * numberOfElements);
-	//			}
-	//			}, i));
-	//		threads.push_back(std::thread([&](int th) {
-	//			for (int j = 0; j < numberOfElements; ++j) {
-	//				list.push_front(j + (th + threadsAmount) * numberOfElements);
-	//			}
-	//			}, i));
-	//	}
+		auto startThreaded = std::chrono::high_resolution_clock::now();
+		
+		for (int i = 0; i < threadsAmount; ++i) {
+			threads.push_back(std::thread([&](int th) {
+				for (int j = 0; j < numberOfElements; ++j) {
+					auto it = list.begin();
+					list.insert(it, j + th * numberOfElements);
+				}
+				}, i));
+			threads.push_back(std::thread([&](int th) {
+				for (int j = 0; j < numberOfElements; ++j) {
+					list.push_front(j + (th + threadsAmount) * numberOfElements);
+				}
+				}, i));
+		}
 
-	//	auto endThreaded = std::chrono::high_resolution_clock::now();
-	//	auto timeThreaded = std::chrono::duration_cast<std::chrono::milliseconds>(endThreaded - startThreaded);
-	//	std::cout << (double)timeThreaded.count() / 1000.0 << std::endl;
+		auto endThreaded = std::chrono::high_resolution_clock::now();
+		auto timeThreaded = std::chrono::duration_cast<std::chrono::milliseconds>(endThreaded - startThreaded);
+		std::cout << (double)timeThreaded.count() / 1000.0 << std::endl;
 
-	//	for (int k = 0; k < threadsAmount * 2; ++k) {
-	//		threads[k].join();
-	//	}
+		for (int k = 0; k < threadsAmount * 2; ++k) {
+			threads[k].join();
+		}
 
-	//	threads.clear();
+		threads.clear();
 
-	//	for (int i = 0; i < threadsAmount; ++i) {
-	//		threads.push_back(std::thread([&](int th) {
-	//			auto it = list.begin();
-	//			auto last = list.end();
-	//			while (it != last) {
-	//				++it;
-	//			}
-	//			}, i));
-	//	}
+		for (int i = 0; i < threadsAmount; ++i) {
+			threads.push_back(std::thread([&](int th) {
+				auto it = list.begin();
+				auto last = list.end();
+				while (it != last) {
+					++it;
+				}
+				}, i));
+		}
 
-	//	for (int k = 0; k < threadsAmount; ++k) {
-	//		threads[k].join();
-	//	}
-	//}
+		for (int k = 0; k < threadsAmount; ++k) {
+			threads[k].join();
+		}
+	}
 	
 
 	SECTION("SPEED TEST") {
@@ -205,9 +205,9 @@ TEST_CASE("TEST") {
 			std::cout << (double)timeThreaded.count() / 1000.0 << std::endl;
 
 			std::cout << numberOfElements * threadsAmount - list.size() << std::endl;
-			std::cout << calls << std::endl;
-			calls = 0;
-			//break;
+			//std::cout << calls << std::endl;
+			//calls = 0;
+			break;
 		}
 	}
 }

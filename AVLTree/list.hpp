@@ -19,7 +19,7 @@ namespace fefu {
 		BEGIN = 3
 	};
 
-	static std::atomic<int> calls = 0;
+	//static std::atomic<int> calls = 0;
 
 	template <typename T>
 	class list_node {
@@ -81,7 +81,7 @@ namespace fefu {
 			stack.push_back(right);
 			
 			delete this;
-			++calls; // debug info
+			//++calls; // debug info
 
 			while (!stack.empty()) {
 				auto* unit = stack.back();
@@ -94,7 +94,7 @@ namespace fefu {
 						stack.push_back(unit->right);
 						delete unit;
 
-						++calls; // debug info
+						//++calls; // debug info
 					}
 				}
 			}
