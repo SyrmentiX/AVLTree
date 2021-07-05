@@ -273,19 +273,12 @@ namespace fefu {
 
 		~List() {
 			value_type* current = root;
-			std::vector<value_type*> stack;
 			while (current != last) {
-				stack.push_back(current);
+				value_type* prev = current;
 				current = current->right;
+				delete prev;
 			}
-			while (!stack.empty()) {
-				delete stack.back();
-				stack.back() = nullptr;
-				stack.pop_back();
-			}
-
 			delete current;
-			current = nullptr;
 		}
 
 		bool empty() {
