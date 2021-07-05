@@ -375,13 +375,13 @@ namespace fefu {
 				std::unique_lock<std::shared_mutex> lock_right(right->mutex);
 
 				value_type* new_node = new value_type(value);
+				new_node->increase_ref();
+				new_node->increase_ref();
 				new_node->left = left;
 				new_node->right = right;
-				new_node->increase_ref();
-				new_node->increase_ref();
 
 				left->right = new_node;
-				last->left = new_node;
+				right->left = new_node;
 
 				++list_size;
 			}
