@@ -19,13 +19,15 @@ namespace fefu {
 		BEGIN = 3
 	};
 
+	static std::atomic<int> calls = 0;
+
 	template <typename T>
 	class list_node {
 	private:
-		template <typename T>
+		template <typename G>
 			friend class ListIterator;
 
-		template <typename T>
+		template <typename G>
 			friend class List;
 
 		std::atomic<status> node_status;
@@ -40,7 +42,9 @@ namespace fefu {
 			purge_left = nullptr;
 		}
 
-		list_node(T value, status state) : list_node(state), value(value){}
+		list_node(T value, status state) : list_node(state){
+			this->value = value;
+		}
 
 		list_node(T value) : value(value), node_status(status::ACTIVE) {
 			left = nullptr;
@@ -63,28 +67,34 @@ namespace fefu {
 		}
 
 		void release() {
-			if (this) {
-				if (ref_count == 1 && node_status == status::DELETED) {
-					this->remove();
-				} else {
-					decrease_ref();
-				}
+			std::unique_lock<std::shared_mutex> lock(mutex);
+			decrease_ref();
+			if (ref_count == 0 && node_status == status::DELETED) {
+				lock.unlock();
+				this->remove();
 			}
 		}
 
 		void remove() {
-			if (this) {
-				std::vector<list_node<T>*> stack({ this });
-				while (!stack.empty()) {
-					auto* unit = stack.back();
-					stack.pop_back();
-					if (unit) {
-						unit->decrease_ref();
-						if (!unit->is_ref() && unit->node_status == status::DELETED) {
-							stack.push_back(unit->left);
-							stack.push_back(unit->right);
-							delete unit;
-						}
+			std::vector<list_node<T>*> stack;
+			stack.push_back(left);
+			stack.push_back(right);
+			
+			delete this;
+			++calls; // debug info
+
+			while (!stack.empty()) {
+				auto* unit = stack.back();
+				stack.pop_back();
+				if (unit) {
+					std::unique_lock<std::shared_mutex> lock(unit->mutex);
+					unit->decrease_ref();
+					if (!unit->is_ref() && unit->node_status == status::DELETED) {
+						stack.push_back(unit->left);
+						stack.push_back(unit->right);
+						delete unit;
+
+						++calls; // debug info
 					}
 				}
 			}
@@ -100,7 +110,7 @@ namespace fefu {
 		using reference = value_type&;
 		using pointer = value_type*;
 
-		template <typename T>
+		template <typename G>
 			friend class List;
 
 		ListIterator(const ListIterator& other) noexcept {
@@ -119,23 +129,40 @@ namespace fefu {
 			if (value != other.value) {
 				lock_other = std::unique_lock<std::shared_mutex>(other.value->mutex);
 			}
-			replace(other);
+			auto* prev_value = value;
+			value = other.value;
+			value->increase_ref();
+
+			lock_other.unlock();
+			prev_value->release();
+
 			return *this;
 		}
 
 		ListIterator& operator=(ListIterator&& other) {
+
 			std::unique_lock<std::shared_mutex> lock(value->mutex);
 			std::unique_lock<std::shared_mutex> lock_other;
 			if (value != other.value) {
 				lock_other = std::unique_lock<std::shared_mutex>(other.value->mutex);
 			}
-			replace(other);
+			auto* prev_value = value;
+			value = other.value;
+			value->increase_ref();
+			
+			lock_other.unlock();
+			prev_value->release();
+
 			return *this;
 		}
 
 		value_type get() {
 			std::shared_lock<std::shared_mutex> lock(this->value->mutex);
 			return (this->value) ? this->value->value : value_type();
+		}
+
+		list_node<value_type>* get_pointer() {
+			return value;
 		}
 
 		void set(value_type new_value) {
@@ -165,21 +192,17 @@ namespace fefu {
 	private:
 		list_node<value_type>* value = nullptr;
 
-		void replace(ListIterator& other) {
-			value->release();
-			value = other.value;
-			value->increase_ref();
-		}
-
 		void inner_plus() {
 			if (value != nullptr && value->node_status != status::END) {
-				std::shared_lock<std::shared_mutex> lock_cur(value->mutex);
-				auto* right = value->right;
+				list_node<value_type>* prev_value = nullptr;
+				{
+					std::shared_lock<std::shared_mutex> lock_cur(value->mutex);
+					auto* right = value->right;
 
-				auto* prev_value = value;
-				value = value->right;
-				value->increase_ref();
-
+					prev_value = value;
+					value = value->right;
+					value->increase_ref();
+				}
 				prev_value->release();
 			}
 		}
@@ -215,7 +238,6 @@ namespace fefu {
 				value_type* current = root;
 				std::vector<value_type*> stack;
 				while (current != last) {
-					std::unique_lock<std::shared_mutex> lock(current->mutex);
 					stack.push_back(current);
 					current = current->right;
 				}
@@ -323,8 +345,9 @@ namespace fefu {
 							retry = false;
 						} 
 						
-						left->release();
 					}
+					
+					left->release();
 				}
 			}
 
@@ -403,10 +426,10 @@ namespace fefu {
 							--list_size;
 							retry = false;
 						}
-
-						left->release();
-						right->release();
 					}
+
+					left->release();
+					right->release();
 				}
 			}
 	};
