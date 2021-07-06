@@ -1,5 +1,4 @@
 ﻿#define CATCH_CONFIG_MAIN
-#define _CRT_SECURE_NO_WARNINGS
 #include <iostream>
 #include <future>
 #include <thread>
@@ -78,14 +77,14 @@ TEST_CASE("TEST") {
 			threads[i].join();
 		}
 
-		REQUIRE(list.size() == numberOfElements * threadsAmount);
+		REQUIRE(list.size() == static_cast<size_t>(numberOfElements * threadsAmount));
 
 		for (int i = 0; i < numberOfElements * threadsAmount; ++i) {
 			REQUIRE(list.find(i).get() == i);
 		}
 			
 		threads.clear();
-		int numberOfDeletes = 20;
+		size_t numberOfDeletes = 20;
 
 		for (int i = 0; i < threadsAmount; ++i) {
 			threads.push_back(std::thread([&](int th) {
@@ -100,7 +99,7 @@ TEST_CASE("TEST") {
 			threads[i].join();
 		}
 
-		for (int i = numberOfDeletes * threadsAmount; i < list.size(); ++i) {
+		for (size_t i = numberOfDeletes * threadsAmount; i < list.size(); ++i) {
 			REQUIRE(list.find(i).get() == i);
 		}
 	}
@@ -215,7 +214,7 @@ TEST_CASE("TEST") {
 			for (int i = 0; i < threadsAmount; ++i) {
 				threads.push_back(std::thread([&](int th) {
 					for (int j = 0; j < numberOfElements / threadsAmount; ++j) {
-						list.push_back(j + th * numberOfElements);
+						list.push_back(j + th * numberOfElements / threadsAmount);
 					}
 					}, i));
 			}
@@ -242,7 +241,7 @@ TEST_CASE("TEST") {
 				threads[k].join();
 			}
 
-			REQUIRE(list.size() >= (size_t)(numberOfElements - numberOfDeletions));
+			REQUIRE(list.size() >= static_cast<size_t>(numberOfElements - numberOfDeletions));
 
 			auto endThreaded = std::chrono::high_resolution_clock::now();
 			auto timeThreaded = std::chrono::duration_cast<std::chrono::milliseconds>(endThreaded - startThreaded);
@@ -250,5 +249,69 @@ TEST_CASE("TEST") {
 			std::cout << "NUMBER OF THREADS = " << threadsAmount << std::endl;
 			std::cout << "TIME = " << (double)timeThreaded.count() / 1000.0 << std::endl;
 		}
+	}
+
+	SECTION("ITERATION/ERASE TEST") {
+		std::cout << "ITERATION/ERASE TEST" << std::endl;
+		srand(time(nullptr));
+		List<int> list;
+		int count = 0;
+		int threadsAmount = 4;
+		int numberOfElements = 100000;
+
+		std::vector<std::thread> threads;
+
+		auto startThreaded = std::chrono::high_resolution_clock::now();
+
+		for (int i = 0; i < threadsAmount; ++i) {
+			threads.push_back(std::thread([&](int th) {
+				for (int j = 0; j < numberOfElements / threadsAmount; ++j) {
+					list.push_back(j + th * numberOfElements / threadsAmount);
+				}
+				}, i));
+		}
+
+		for (int k = 0; k < threadsAmount; ++k) {
+			threads[k].join();
+		}
+
+		REQUIRE(list.size() == numberOfElements);
+		threads.clear();
+
+		std::condition_variable cv;
+		
+
+		int numberOfDeletions = numberOfElements / 2;
+
+		for (int i = 0; i < threadsAmount / 2; ++i) {
+			threads.push_back(std::thread([&](int th) {
+				std::mutex mutex_;
+				std::unique_lock<std::mutex> lck(mutex_);
+				cv.wait(lck);
+				for (int j = 0; j < numberOfDeletions / threadsAmount / 2; ++j) {
+					auto it = list.begin();
+					list.erase(it);
+				}
+			}, i));
+			threads.push_back(std::thread([&](int th) {
+				std::mutex mutex_;
+				std::unique_lock<std::mutex> lck(mutex_);
+				cv.wait(lck);
+				auto it = list.begin();
+				int numberOfIterations = rand() % numberOfElements;
+				for (int j = 0; j < numberOfIterations; ++j) {
+					++it;
+				}
+			}, i));
+		}
+
+		std::this_thread::sleep_for(std::chrono::milliseconds(100));
+		cv.notify_all();
+
+		for (int k = 0; k < threadsAmount; ++k) {
+			threads[k].join();
+		}
+
+		REQUIRE(list.size() >= static_cast<size_t>(numberOfElements - numberOfDeletions));
 	}
 }

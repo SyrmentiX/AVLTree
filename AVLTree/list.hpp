@@ -1,5 +1,10 @@
 #pragma once
 
+#include <iostream>
+#include <future>
+#include <thread>
+#include <ctime>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <new>
@@ -11,6 +16,9 @@
 #include <shared_mutex>
 
 namespace fefu {
+
+	template <typename T> class List;
+
 
 	enum class status {
 		DELETED = 0,
@@ -28,23 +36,28 @@ namespace fefu {
 		template <typename G>
 		friend class List;
 
+		template <typename G>
+		friend class Purgatory;
+
 		std::atomic<status> node_status;
 		T value;
+		List<T>* list = nullptr;
 		list_node* left, * right;
 		std::atomic<std::size_t> ref_count = 0;
+		std::atomic<int> purged = 0;
 		std::shared_mutex mutex;
 
-
-		list_node(status state) : node_status(state), value() {
+		list_node(status state, List<T>* list) : node_status(state), value(), list(list) {
 			left = nullptr;
 			right = nullptr;
 		}
 
-		list_node(T value, status state) : list_node(state) {
+		list_node(status state, T value, List<T>* list) : list_node(state) {
 			this->value = value;
+			this->list = list;
 		}
 
-		list_node(T value) : node_status(status::ACTIVE), value(value) {
+		list_node(T value, List<T>* list) : node_status(status::ACTIVE), value(value), list(list) {
 			left = nullptr;
 			right = nullptr;
 		}
@@ -64,35 +77,132 @@ namespace fefu {
 		}
 
 		void release() {
-			std::unique_lock<std::shared_mutex> lock(mutex);
-			decrease_ref();
-			if (ref_count == 0 && node_status == status::DELETED) {
-				lock.unlock();
-				this->remove();
+			std::shared_lock<std::shared_mutex> lock(list->purge_mutex);
+			auto prev_ref = --ref_count;
+			if (prev_ref == 0) {
+				list->purgatory->push_to_purge(this);
 			}
 		}
+	};
 
-		void remove() {
-			std::vector<list_node<T>*> stack;
-			stack.push_back(left);
-			stack.push_back(right);
+	template <typename T>
+	class purgatory_node {
+	private:
+		template<typename G>
+		friend class Purgatory;
 
-			delete this;
+		purgatory_node(list_node<T>* node) : node(node), next(nullptr) {}
 
-			while (!stack.empty()) {
-				auto* unit = stack.back();
-				stack.pop_back();
-				if (unit) {
-					std::unique_lock<std::shared_mutex> lock(unit->mutex);
-					unit->decrease_ref();
-					if (!unit->is_ref() && unit->node_status == status::DELETED) {
-						lock.unlock();
-						stack.push_back(unit->left);
-						stack.push_back(unit->right);
-						delete unit;
-					}
-				}
+		list_node<T>* node;
+		purgatory_node<T>* next;
+	};
+
+	template <typename T>
+	class Purgatory {
+	private:
+		List<T>* list;
+		std::atomic<purgatory_node<T>*> head = nullptr;
+		std::thread purgeThread;
+		std::atomic<bool> purg_cleared = false;
+
+		template<typename G>
+		friend class List;
+
+		template<typename G>
+		friend class list_node;
+
+		Purgatory(List<T>* list) : list(list) {
+			purgeThread = std::thread(&Purgatory::clear_purgatory, this);
+		}
+
+		~Purgatory() {
+			purg_cleared = true;
+			purgeThread.join();
+		}
+
+		void push_to_purge(list_node<T>* node) {
+			purgatory_node<T>* pnode = new purgatory_node<T>(node);
+
+			do {
+				pnode->next = head.load();
+			} while (!head.compare_exchange_strong(pnode->next, pnode));
+		}
+
+		void remove_node(purgatory_node<T>* prev, purgatory_node<T>* node) {
+			prev->next = node->next;
+			delete node;
+		}
+
+		void release_node(purgatory_node<T>* node) {
+			list_node<T>* left = node->node->left;
+			list_node<T>* right = node->node->right;
+
+			if (left) {
+				left->release();
 			}
+			if (right) {
+				right->release();
+			}
+
+			delete node->node;
+			delete node;
+		}
+
+		void clear_purgatory() {
+			do {
+				std::unique_lock<std::shared_mutex> lock(list->purge_mutex);
+				purgatory_node<T>* head1 = this->head;
+				lock.unlock();
+
+				if (head1) {
+					purgatory_node<T>* prev_node = head1;
+					for (purgatory_node<T>* next_node = head1; next_node;) {
+						purgatory_node<T>* current_node = next_node;
+						next_node = next_node->next;
+
+						if (current_node->node->is_ref() || current_node->node->purged == 1) {
+							remove_node(prev_node, current_node);
+						}
+						else {
+							++current_node->node->purged;
+							prev_node = current_node;
+						}
+					}
+
+					lock.lock();
+					purgatory_node<T>* head2 = this->head;
+
+					if (head1 == head2) {
+						head = nullptr;
+					}
+
+					lock.unlock();
+
+					prev_node = head2;
+					for (purgatory_node<T>* next_node = head2; next_node != head1;) {
+						purgatory_node<T>* current_node = next_node;
+						next_node = next_node->next;
+
+						if (current_node->node->purged == 1) {
+							remove_node(prev_node, current_node);
+						}
+						else {
+							prev_node = current_node;
+						}
+					}
+
+					prev_node->next = nullptr;
+
+					for (purgatory_node<T>* next_node = head1; next_node;) {
+						purgatory_node<T>* current_node = next_node;
+						next_node = next_node->next;
+						release_node(current_node);
+					}
+				} 
+				if (!purg_cleared) {
+					std::this_thread::sleep_for(std::chrono::milliseconds(100));
+				}
+			} while (!purg_cleared || head.load());
 		}
 	};
 
@@ -169,10 +279,6 @@ namespace fefu {
 			return (this->value) ? this->value->value : value_type();
 		}
 
-		list_node<value_type>* get_pointer() {
-			return value;
-		}
-
 		void set(value_type new_value) {
 			std::unique_lock<std::shared_mutex> lock(this->value->mutex);
 			this->value->value = new_value;
@@ -215,7 +321,7 @@ namespace fefu {
 			if (value && value->node_status != status::END) {
 				list_node<value_type>* prev_value = nullptr;
 				{
-					std::unique_lock<std::shared_mutex> lock_cur(value->mutex);
+					std::shared_lock<std::shared_mutex> lock_cur(value->mutex);
 
 					prev_value = value;
 					value = value->right;
@@ -229,7 +335,7 @@ namespace fefu {
 			if (value && value->node_status != status::BEGIN) {
 				list_node<value_type>* prev_value = nullptr;
 				{
-					std::unique_lock<std::shared_mutex> lock_cur(value->mutex);
+					std::shared_lock<std::shared_mutex> lock_cur(value->mutex);
 
 					prev_value = value;
 					value = value->left;
@@ -255,14 +361,21 @@ namespace fefu {
 		using const_reference = const list_type&;
 		using iterator = ListIterator<list_type>;
 
+		template <typename G>
+		friend class list_node;
+
+		template <typename G>
+		friend class Purgatory;
+
 		List(std::initializer_list<list_type> list) : List() {
 			for (auto it : list)
 				push_back(it);
 		}
 
 		List() {
-			last = new value_type(status::END);
-			root = new value_type(status::BEGIN);
+			last = new value_type(status::END, this);
+			root = new value_type(status::BEGIN, this);
+			purgatory = new Purgatory<T>(this);
 
 			last->increase_ref();
 			root->increase_ref();
@@ -272,6 +385,8 @@ namespace fefu {
 		}
 
 		~List() {
+			delete purgatory;
+
 			value_type* current = root;
 			while (current != last) {
 				value_type* prev = current;
@@ -290,12 +405,12 @@ namespace fefu {
 		}
 
 		iterator begin() {
-			std::unique_lock<std::shared_mutex> lock_root(root->mutex);
+			std::shared_lock<std::shared_mutex> lock_root(root->mutex);
 			return iterator(root->right);
 		}
 
 		iterator end() {
-			std::unique_lock<std::shared_mutex> lock(last->mutex);
+			std::shared_lock<std::shared_mutex> lock(last->mutex);
 			return iterator(last);
 		}
 
@@ -304,7 +419,7 @@ namespace fefu {
 			auto* rightR = root->right;
 			std::unique_lock<std::shared_mutex> lock_right(rightR->mutex);
 
-			value_type* new_node = new value_type(value);
+			value_type* new_node = new value_type(value, this);
 			new_node->left = root;
 			new_node->right = rightR;
 			new_node->increase_ref();
@@ -330,7 +445,7 @@ namespace fefu {
 					std::unique_lock<std::shared_mutex> lock(last->mutex);
 
 					if (left->right == last && last->left == left) {
-						value_type* new_node = new value_type(value);
+						value_type* new_node = new value_type(value, this);
 						new_node->left = left;
 						new_node->right = last;
 						new_node->increase_ref();
@@ -367,7 +482,7 @@ namespace fefu {
 				value_type* right = left->right;
 				std::unique_lock<std::shared_mutex> lock_right(right->mutex);
 
-				value_type* new_node = new value_type(value);
+				value_type* new_node = new value_type(value, this);
 				new_node->increase_ref();
 				new_node->increase_ref();
 				new_node->left = left;
@@ -451,6 +566,8 @@ namespace fefu {
 	private:
 		value_type* root = nullptr;
 		value_type* last = nullptr;
+		Purgatory<T>* purgatory;
 		std::atomic<size_type> list_size = 0;
+		std::shared_mutex purge_mutex;
 	};
 }
