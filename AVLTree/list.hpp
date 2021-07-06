@@ -222,6 +222,7 @@ namespace fefu {
 			std::unique_lock<std::shared_mutex> lock(other.value->mutex);
 			value = other.value;
 			value->increase_ref();
+			list = other.list;
 		}
 
 		~ListIterator() {
@@ -245,6 +246,7 @@ namespace fefu {
 			auto* prev_value = value;
 			value = other.value;
 			value->increase_ref();
+			list = other.list;
 
 			lock_other.unlock();
 			lock.unlock();
@@ -265,6 +267,7 @@ namespace fefu {
 			auto* prev_value = value;
 			value = other.value;
 			value->increase_ref();
+			list = other.list;
 
 			lock_other.unlock();
 			lock.unlock();
@@ -316,12 +319,13 @@ namespace fefu {
 
 	private:
 		list_node<value_type>* value = nullptr;
+		List<T>* list;
 
 		void inner_plus() {
 			if (value && value->node_status != status::END) {
 				list_node<value_type>* prev_value = nullptr;
 				{
-					std::shared_lock<std::shared_mutex> lock_cur(value->mutex);
+					std::shared_lock<std::shared_mutex> lock_cur(list->purge_mutex);
 
 					prev_value = value;
 					value = value->right;
@@ -335,7 +339,7 @@ namespace fefu {
 			if (value && value->node_status != status::BEGIN) {
 				list_node<value_type>* prev_value = nullptr;
 				{
-					std::shared_lock<std::shared_mutex> lock_cur(value->mutex);
+					std::shared_lock<std::shared_mutex> lock_cur(list->purge_mutex);
 
 					prev_value = value;
 					value = value->left;
@@ -345,9 +349,10 @@ namespace fefu {
 			}
 		}
 
-		ListIterator(list_node<value_type>* value) noexcept {
+		ListIterator(list_node<value_type>* value, List<T>* list) noexcept {
 			this->value = value;
 			this->value->increase_ref();
+			this->list = list;
 		}
 	};
 
@@ -366,6 +371,9 @@ namespace fefu {
 
 		template <typename G>
 		friend class Purgatory;
+
+		template <typename G>
+		friend class ListIterator;
 
 		List(std::initializer_list<list_type> list) : List() {
 			for (auto it : list)
@@ -406,12 +414,12 @@ namespace fefu {
 
 		iterator begin() {
 			std::shared_lock<std::shared_mutex> lock_root(root->mutex);
-			return iterator(root->right);
+			return iterator(root->right, this);
 		}
 
 		iterator end() {
 			std::shared_lock<std::shared_mutex> lock(last->mutex);
-			return iterator(last);
+			return iterator(last, this);
 		}
 
 		void push_front(list_type value) {
@@ -503,7 +511,7 @@ namespace fefu {
 				lock = std::shared_lock<std::shared_mutex>(current->mutex);
 				current = current->right;
 			}
-			return iterator(current);
+			return iterator(current, this);
 		}
 
 		void erase(iterator it) {
@@ -557,7 +565,7 @@ namespace fefu {
 		void pop_back() {
 			if (!empty()) {
 				std::unique_lock<std::shared_mutex> lock(last->mutex);
-				auto it = iterator(last->left);
+				auto it = iterator(last->left, this);
 				lock.unlock();
 				erase(it);
 			}

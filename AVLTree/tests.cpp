@@ -84,7 +84,7 @@ TEST_CASE("TEST") {
 		}
 			
 		threads.clear();
-		size_t numberOfDeletes = 20;
+		int numberOfDeletes = 20;
 
 		for (int i = 0; i < threadsAmount; ++i) {
 			threads.push_back(std::thread([&](int th) {
@@ -147,7 +147,7 @@ TEST_CASE("TEST") {
 		auto timeThreaded = std::chrono::duration_cast<std::chrono::milliseconds>(endThreaded - startThreaded);
 		std::cout << (double)timeThreaded.count() / 1000.0 << std::endl;
 
-		REQUIRE(list.size() >= (numberOfElements * threadsAmount));
+		REQUIRE(list.size() >= static_cast<size_t>(numberOfElements * threadsAmount));
 	}
 
 	SECTION("INSERT TEST") {
