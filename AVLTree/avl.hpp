@@ -1,5 +1,10 @@
 #pragma once
 
+#include <iostream>
+#include <future>
+#include <thread>
+#include <ctime>
+#include <condition_variable>
 #include <functional>
 #include <memory>
 #include <new>
@@ -7,6 +12,8 @@
 #include <type_traits>
 #include <numeric>
 #include <vector>
+#include <atomic>
+#include <shared_mutex>
 
 namespace fefu {
 
@@ -97,9 +104,10 @@ namespace fefu {
 
 		AVLIterator() noexcept {}
 
-		AVLIterator(const AVLIterator& other) noexcept {
+		AVLIterator(const AVLIterator& other, std::shared_mutex* mutex) noexcept {
 			value = other.value;
 			value->increase_ref();
+			this->mutex = mutex;
 		}
 
 		~AVLIterator() {
@@ -179,6 +187,7 @@ namespace fefu {
 
 	private:
 		node<value_type, key_type>* value = nullptr;
+		std::shared_mutex* mutex;
 
 		AVLIterator(node<value_type, key_type>* value) noexcept : value(value) {
 			value->increase_ref();
@@ -225,24 +234,18 @@ namespace fefu {
 			current.value = nullptr;
 		}
 
-		void clear() {
-			iterator current = this->begin();
-			iterator end = this->end();
-			while (current != end) {
-				this->erase(*current);
-				++current;
-			}
-		}
-
 		bool empty() {
+			std::shared_lock<std::shared_mutex> lock(mutex);
 			return set_size == 0;
 		}
 
 		size_type size() {
+			std::shared_lock<std::shared_mutex> lock(mutex);
 			return set_size;
 		}
 
 		iterator begin() {
+			std::shared_lock<std::shared_mutex> lock(mutex);
 			value_type* current = root;
 			while (current->left) {
 				current = current->left;
@@ -251,6 +254,7 @@ namespace fefu {
 		}
 
 		iterator end() {
+			std::shared_lock<std::shared_mutex> lock(mutex);
 			value_type* current = root;
 			while (current->right) {
 				current = current->right;
@@ -259,6 +263,7 @@ namespace fefu {
 		}
 
 		void insert(map_type value, key_type key) {
+			std::unique_lock<std::shared_mutex> lock(mutex);
 			value_type *parent_node = find_node(key);
 			if (parent_node->key != key || parent_node->node_status == status::END) {
 				value_type* new_node = new value_type(value, key, parent_node);
@@ -287,6 +292,7 @@ namespace fefu {
 		}
 
 		iterator find(key_type key) {
+			std::shared_lock<std::shared_mutex> lock(mutex);
 			auto it = iterator(find_node(key));
 			if (it.value->key != key) {
 				return end();
@@ -296,6 +302,7 @@ namespace fefu {
 
 		void erase(key_type key) {
 			if (!empty()) {
+				std::unique_lock<std::shared_mutex> lock(mutex);
 				value_type* unit = find_node(key);
 				if (unit->key == key && unit->node_status == status::ACTIVE) {
 					--set_size;
@@ -340,6 +347,7 @@ namespace fefu {
 		value_type *root = nullptr;
 		size_type set_size = 0;
 		value_compare _compare;
+		std::shared_mutex mutex;
 
 		void delete_node(value_type *unit) {
 			unit->node_status = status::DELETED;

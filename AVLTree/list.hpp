@@ -19,6 +19,53 @@ namespace fefu {
 
 	template <typename T> class List;
 
+	class rw_lock {
+	public:
+		std::atomic<uint32_t> val = 0;
+		uint32_t WRITE_BIT = (1 << 31);
+
+		rw_lock() {
+			val = 0;
+		}
+
+		void rlock() {
+			while (true) {
+				uint32_t old = val;
+				if (!(old & WRITE_BIT) && val.compare_exchange_strong(old, old + 1, std::memory_order_release,
+					std::memory_order_relaxed)) {
+					return;
+				}
+				std::this_thread::yield();
+			}
+		}
+
+		void wlock() {
+			while (true) {
+				uint32_t old = val;
+				if (!(old & WRITE_BIT) &&
+					val.compare_exchange_strong(old, old | WRITE_BIT, std::memory_order_release,
+						std::memory_order_relaxed)) {
+					break;
+				}
+				std::this_thread::yield();
+			}
+			while (true) {
+				if (val == WRITE_BIT) {
+					break;
+				}
+				std::this_thread::yield();
+			}
+		}
+
+		void unlock() {
+			if (val == WRITE_BIT) {
+				val = 0;
+			}
+			else {
+				--val;
+			}
+		}
+	};
 
 	enum class status {
 		DELETED = 0,
@@ -45,6 +92,7 @@ namespace fefu {
 		list_node* left, * right;
 		std::atomic<std::size_t> ref_count = 0;
 		std::atomic<int> purged = 0;
+		rw_lock lock;
 		std::shared_mutex mutex;
 
 		list_node(status state, List<T>* list) : node_status(state), value(), list(list) {
@@ -77,11 +125,13 @@ namespace fefu {
 		}
 
 		void release() {
-			std::shared_lock<std::shared_mutex> lock(list->purge_mutex);
+			//std::shared_lock<std::shared_mutex> lock(list->purge_mutex);
+			list->purge_lock.rlock();
 			auto prev_ref = --ref_count;
 			if (prev_ref == 0) {
 				list->purgatory->push_to_purge(this);
 			}
+			list->purge_lock.unlock();
 		}
 	};
 
@@ -125,7 +175,8 @@ namespace fefu {
 
 			do {
 				pnode->next = head.load();
-			} while (!head.compare_exchange_strong(pnode->next, pnode));
+			} while (!head.compare_exchange_strong(pnode->next, pnode, std::memory_order_release,
+				std::memory_order_relaxed));
 		}
 
 		void remove_node(purgatory_node<T>* prev, purgatory_node<T>* node) {
@@ -150,9 +201,13 @@ namespace fefu {
 
 		void clear_purgatory() {
 			do {
-				std::unique_lock<std::shared_mutex> lock(list->purge_mutex);
+				//std::unique_lock<std::shared_mutex> lock(list->purge_mutex);
+				list->purge_lock.wlock();
+
 				purgatory_node<T>* head1 = this->head;
-				lock.unlock();
+				
+				//lock.unlock();
+				list->purge_lock.unlock();
 
 				if (head1) {
 					purgatory_node<T>* prev_node = head1;
@@ -160,7 +215,7 @@ namespace fefu {
 						purgatory_node<T>* current_node = next_node;
 						next_node = next_node->next;
 
-						if (current_node->node->is_ref() || current_node->node->purged == 1) {
+						if (current_node->node->is_ref() || current_node->node->purged) {
 							remove_node(prev_node, current_node);
 						}
 						else {
@@ -169,14 +224,16 @@ namespace fefu {
 						}
 					}
 
-					lock.lock();
+					//lock.lock();
+					list->purge_lock.wlock();
 					purgatory_node<T>* head2 = this->head;
 
 					if (head1 == head2) {
 						head = nullptr;
 					}
 
-					lock.unlock();
+					//lock.unlock();
+					list->purge_lock.unlock();
 
 					prev_node = head2;
 					for (purgatory_node<T>* next_node = head2; next_node != head1;) {
@@ -198,7 +255,7 @@ namespace fefu {
 						next_node = next_node->next;
 						release_node(current_node);
 					}
-				} 
+				}
 				if (!purg_cleared) {
 					std::this_thread::sleep_for(std::chrono::milliseconds(100));
 				}
@@ -219,7 +276,6 @@ namespace fefu {
 		friend class List;
 
 		ListIterator(const ListIterator& other) noexcept {
-			std::unique_lock<std::shared_mutex> lock(other.value->mutex);
 			value = other.value;
 			value->increase_ref();
 			list = other.list;
@@ -229,27 +285,38 @@ namespace fefu {
 			value->release();
 		}
 
-		reference operator*() const {
-			std::shared_lock<std::shared_mutex> lock(value->mutex);
-			return value->value;
+		value_type operator*() const {
+			//std::shared_lock<std::shared_mutex> lock(value->mutex);
+			value->lock.rlock();
+			auto ref = value->value;
+			value->lock.unlock();
+
+			return ref;
 		}
 
 		ListIterator& operator=(const ListIterator& other) {
-			std::unique_lock<std::shared_mutex> lock(value->mutex);
+			
+			//std::unique_lock<std::shared_mutex> lock(value->mutex);
+			value->lock.wlock();
 
 			if (value == other.value) {
+				value->lock.unlock();
 				return *this;
 			}
 
-			std::unique_lock<std::shared_mutex> lock_other(other.value->mutex);
+			//std::unique_lock<std::shared_mutex> lock_other(other.value->mutex);
+			other.value->lock.wlock();
 
 			auto* prev_value = value;
 			value = other.value;
 			value->increase_ref();
 			list = other.list;
 
-			lock_other.unlock();
-			lock.unlock();
+			//lock_other.unlock();
+			//lock.unlock();
+
+			prev_value->lock.unlock();
+			value->lock.unlock();
 
 			prev_value->release();
 			return *this;
@@ -257,20 +324,26 @@ namespace fefu {
 
 		ListIterator& operator=(ListIterator&& other) {
 
-			std::unique_lock<std::shared_mutex> lock(value->mutex);
+			//std::unique_lock<std::shared_mutex> lock(value->mutex);
+			value->lock.wlock();
 
 			if (value == other.value) {
+				value->lock.unlock();
 				return *this;
 			}
 
-			std::unique_lock<std::shared_mutex> lock_other(other.value->mutex);
+			//std::unique_lock<std::shared_mutex> lock_other(other.value->mutex);
+			other.value->lock.wlock();
+
 			auto* prev_value = value;
 			value = other.value;
 			value->increase_ref();
 			list = other.list;
 
-			lock_other.unlock();
-			lock.unlock();
+			//lock_other.unlock();
+			//lock.unlock();
+			prev_value->lock.unlock();
+			value->lock.unlock();
 
 			prev_value->release();
 
@@ -278,13 +351,19 @@ namespace fefu {
 		}
 
 		value_type get() {
-			std::shared_lock<std::shared_mutex> lock(this->value->mutex);
-			return (this->value) ? this->value->value : value_type();
+
+			//std::shared_lock<std::shared_mutex> lock(this->value->mutex);
+			value->lock.rlock();
+			auto val = this->value->value;
+			value->lock.unlock();
+			return val;
 		}
 
 		void set(value_type new_value) {
-			std::unique_lock<std::shared_mutex> lock(this->value->mutex);
+			//std::unique_lock<std::shared_mutex> lock(this->value->mutex);
+			value->lock.wlock();
 			this->value->value = new_value;
+			value->lock.unlock();
 		}
 
 		ListIterator& operator++() {
@@ -325,11 +404,14 @@ namespace fefu {
 			if (value && value->node_status != status::END) {
 				list_node<value_type>* prev_value = nullptr;
 				{
-					std::shared_lock<std::shared_mutex> lock_cur(list->purge_mutex);
+					//std::shared_lock<std::shared_mutex> lock_cur(list->purge_mutex);
+					list->purge_lock.rlock();
 
 					prev_value = value;
 					value = value->right;
 					value->increase_ref();
+
+					list->purge_lock.unlock();
 				}
 				prev_value->release();
 			}
@@ -339,11 +421,14 @@ namespace fefu {
 			if (value && value->node_status != status::BEGIN) {
 				list_node<value_type>* prev_value = nullptr;
 				{
-					std::shared_lock<std::shared_mutex> lock_cur(list->purge_mutex);
+					//std::shared_lock<std::shared_mutex> lock_cur(list->purge_mutex);
+					list->purge_lock.rlock();
 
 					prev_value = value;
 					value = value->left;
 					value->increase_ref();
+
+					list->purge_lock.unlock();
 				}
 				prev_value->release();
 			}
@@ -413,19 +498,30 @@ namespace fefu {
 		}
 
 		iterator begin() {
-			std::shared_lock<std::shared_mutex> lock_root(root->mutex);
-			return iterator(root->right, this);
+			//std::shared_lock<std::shared_mutex> lock_root(root->mutex);
+			root->lock.rlock();
+			iterator it(root->right, this);
+			root->lock.unlock();
+
+			return it;
 		}
 
 		iterator end() {
-			std::shared_lock<std::shared_mutex> lock(last->mutex);
-			return iterator(last, this);
+			//std::shared_lock<std::shared_mutex> lock(last->mutex);
+			
+			last->lock.rlock();
+			iterator it(last, this);
+			last->lock.unlock();
+
+			return it;
 		}
 
 		void push_front(list_type value) {
-			std::unique_lock<std::shared_mutex> lock_root_write(root->mutex);
-			auto* rightR = root->right;
-			std::unique_lock<std::shared_mutex> lock_right(rightR->mutex);
+			//std::unique_lock<std::shared_mutex> lock_root_write(root->mutex);
+			root->lock.wlock();
+			value_type* rightR = root->right;
+			//std::unique_lock<std::shared_mutex> lock_right(rightR->mutex);
+			rightR->lock.wlock();
 
 			value_type* new_node = new value_type(value, this);
 			new_node->left = root;
@@ -437,20 +533,30 @@ namespace fefu {
 			rightR->left = new_node;
 			root->right = new_node;
 			++list_size;
+
+			root->lock.unlock();
+			rightR->lock.unlock();
 		}
 
 		void push_back(list_type value) {
 			value_type* left = nullptr;
 			for (bool retry = true; retry;) {
 				{
-					std::unique_lock<std::shared_mutex> lock(last->mutex);
+					//std::shared_lock<std::shared_mutex> lock(last->mutex);
+					last->lock.wlock();
+
 					left = last->left;
 					left->increase_ref();
+
+					last->lock.unlock();
 				}
 
 				{
-					std::unique_lock<std::shared_mutex> lock_left(left->mutex);
-					std::unique_lock<std::shared_mutex> lock(last->mutex);
+					left->lock.wlock();
+					last->lock.wlock();
+
+					//std::unique_lock<std::shared_mutex> lock_left(left->mutex);
+					//std::unique_lock<std::shared_mutex> lock(last->mutex);
 
 					if (left->right == last && last->left == left) {
 						value_type* new_node = new value_type(value, this);
@@ -459,7 +565,6 @@ namespace fefu {
 						new_node->increase_ref();
 						new_node->increase_ref();
 
-
 						left->right = new_node;
 						last->left = new_node;
 
@@ -467,6 +572,9 @@ namespace fefu {
 
 						retry = false;
 					}
+
+					left->lock.unlock();
+					last->lock.unlock();
 
 				}
 
@@ -483,12 +591,17 @@ namespace fefu {
 				push_front(value);
 			}
 			else {
-				std::unique_lock<std::shared_mutex> lock_left(left->mutex);
-				if (left->node_status == status::DELETED)
+
+				left->lock.wlock();
+				//std::unique_lock<std::shared_mutex> lock_left(left->mutex);
+				if (left->node_status == status::DELETED) {
+					left->lock.unlock();
 					return;
+				}
 
 				value_type* right = left->right;
-				std::unique_lock<std::shared_mutex> lock_right(right->mutex);
+				right->lock.wlock();
+				//std::unique_lock<std::shared_mutex> lock_right(right->mutex);
 
 				value_type* new_node = new value_type(value, this);
 				new_node->increase_ref();
@@ -500,16 +613,35 @@ namespace fefu {
 				right->left = new_node;
 
 				++list_size;
+
+				left->lock.unlock();
+				right->lock.unlock();
 			}
 		}
 
+		bool checklocks() {
+			value_type* cur = root;
+			while (cur != last) {
+				if (cur->lock.val != 0) {
+					return false;
+				}
+				cur = cur->right;
+ 			}
+			return true;
+		}
+
 		iterator find(list_type value) {
+			//std::shared_lock<std::shared_mutex> lock(current->mutex);
+			root->lock.rlock();
 			value_type* current = root;
-			std::shared_lock<std::shared_mutex> lock(current->mutex);
 			current = current->right;
+			root->lock.unlock();
 			while (current != last && current->value != value) {
-				lock = std::shared_lock<std::shared_mutex>(current->mutex);
-				current = current->right;
+				current->lock.rlock();
+				//lock = std::shared_lock<std::shared_mutex>(current->mutex);
+				value_type* right = current->right;
+				current->lock.unlock();
+				current = right;
 			}
 			return iterator(current, this);
 		}
@@ -525,22 +657,29 @@ namespace fefu {
 
 			for (bool retry = true; retry;) {
 				{
-					std::shared_lock<std::shared_mutex> lock(node->mutex);
-					if (node->node_status == status::DELETED)
+					node->lock.rlock();
+					//std::shared_lock<std::shared_mutex> lock(node->mutex);
+					if (node->node_status == status::DELETED){
+						node->lock.unlock();
 						return;
+					}
 
 					left = node->left;
 					left->increase_ref();
 
 					right = node->right;
 					right->increase_ref();
+
+					node->lock.unlock();
 				}
 
 				{
-					std::unique_lock<std::shared_mutex> lock_left(left->mutex);
-					std::shared_lock<std::shared_mutex> lock(node->mutex);
-					std::unique_lock<std::shared_mutex> lock_right(right->mutex);
-
+					left->lock.wlock();
+					node->lock.rlock();
+					right->lock.wlock();
+					//std::unique_lock<std::shared_mutex> lock_left(left->mutex);
+					//std::shared_lock<std::shared_mutex> lock(node->mutex);
+					//std::unique_lock<std::shared_mutex> lock_right(right->mutex);
 					if (left->right == node && right->left == node) {
 						node->node_status = status::DELETED;
 						node->decrease_ref();
@@ -555,6 +694,10 @@ namespace fefu {
 						--list_size;
 						retry = false;
 					}
+
+					left->lock.unlock();
+					node->lock.unlock();
+					right->lock.unlock();
 				}
 
 				left->release();
@@ -564,9 +707,11 @@ namespace fefu {
 
 		void pop_back() {
 			if (!empty()) {
-				std::unique_lock<std::shared_mutex> lock(last->mutex);
+				//std::unique_lock<std::shared_mutex> lock(last->mutex);
+				last->lock.wlock();
 				auto it = iterator(last->left, this);
-				lock.unlock();
+				last->lock.unlock();
+				//lock.unlock();
 				erase(it);
 			}
 		}
@@ -577,5 +722,6 @@ namespace fefu {
 		Purgatory<T>* purgatory;
 		std::atomic<size_type> list_size = 0;
 		std::shared_mutex purge_mutex;
+		rw_lock purge_lock;
 	};
 }
