@@ -39,7 +39,10 @@ namespace fefu {
 			parent = nullptr;
 		}
 
-		node(T value, K key, status state) : node(state), value(value), key(key) {}
+		node(T value, K key, status state) : node(state){
+			this->value = value;
+			this->key = key;
+		}
 
 		node(T value, K key): value(value), key(key), node_status(status::ACTIVE){
 			left = nullptr;
@@ -98,20 +101,20 @@ namespace fefu {
 		using reference = value_type&;
 		using pointer = value_type*;
 
-		template <typename T, typename K,
-			typename Compare = std::less<T>>
+		template <typename G, typename Z>
 		friend class AVLTree;
 
 		AVLIterator() noexcept {}
 
-		AVLIterator(const AVLIterator& other, std::shared_mutex* mutex) noexcept {
+		AVLIterator(const AVLIterator& other) noexcept {
 			value = other.value;
 			value->increase_ref();
-			this->mutex = mutex;
+			this->mutex = other.mutex;
 		}
 
 		~AVLIterator() {
 			if (value) {
+				std::unique_lock<std::shared_mutex> lock(*mutex);
 				value->decrease_ref();
 				if (!value->is_ref()) {
 					value->remove();
@@ -120,11 +123,13 @@ namespace fefu {
 		}
 
 		AVLIterator& operator=(AVLIterator& other) {
+			std::unique_lock<std::shared_mutex> lock(*other.mutex);
 			*this = AVLIterator(other);
 			return *this;
 		}
 
 		AVLIterator& operator=(AVLIterator&& other) {
+			std::unique_lock<std::shared_mutex> lock(*other.mutex);
 			value->decrease_ref();
 			value->remove();
 			value = other.value;
@@ -133,14 +138,42 @@ namespace fefu {
 		}
 
 		reference operator*() const {
+			std::unique_lock<std::shared_mutex> lock(*mutex);
 			return this->value->value;
 		}
 
 		pointer operator->() const {
+
+			std::unique_lock<std::shared_mutex> lock(*mutex);
 			return &this->value->value;
 		}
 
 		AVLIterator &operator++() {
+			std::unique_lock<std::shared_mutex> lock(*mutex);
+			inner_plus();
+			return *this;
+		}
+
+		// postfix ++
+		AVLIterator operator++(int) {
+			std::unique_lock<std::shared_mutex> lock(*mutex);
+			AVLIterator temp = *this;
+			inner_plus();
+			return temp;
+		}
+
+		bool operator==(const AVLIterator& other) {
+			std::shared_lock<std::shared_mutex> lock(*mutex);
+			return other.value == this->value;
+		}
+
+		bool operator!=(const AVLIterator& other) {
+			std::shared_lock<std::shared_mutex> lock(*mutex);
+			return other.value != this->value;
+		}
+
+	private:
+		void inner_plus() {
 			if (value->node_status != status::END) {
 				node<value_type, key_type>* prev_value = value;
 				value->decrease_ref();
@@ -149,15 +182,18 @@ namespace fefu {
 					while (value->left && prev_value->key < value->left->key) {
 						value = value->left;
 					}
-				} else if (value->parent) {
+				}
+				else if (value->parent) {
 					if (value->parent->left == value) {
 						value = value->parent;
-					} else if (value->parent->right == value) {
+					}
+					else if (value->parent->right == value) {
 						while (value->parent != nullptr && value->parent->right == value) {
 							value = value->parent;
 						}
 						value = value->parent;
-					} else {
+					}
+					else {
 						value = value->parent;
 					}
 				}
@@ -167,41 +203,22 @@ namespace fefu {
 					prev_value->remove();
 				}
 			}
-			return *this;
 		}
 
-		// postfix ++
-		AVLIterator operator++(int) {
-			AVLIterator temp = *this;
-			++*this;
-			return temp;
-		}
-
-		bool operator==(const AVLIterator& other) {
-			return other.value == this->value;
-		}
-
-		bool operator!=(const AVLIterator& other) {
-			return other.value != this->value;
-		}
-
-	private:
 		node<value_type, key_type>* value = nullptr;
 		std::shared_mutex* mutex;
 
-		AVLIterator(node<value_type, key_type>* value) noexcept : value(value) {
+		AVLIterator(node<value_type, key_type>* value, std::shared_mutex* mutex) noexcept : value(value), mutex(mutex) {
 			value->increase_ref();
 		}
 	};
 
-	template <typename T, typename K,
-		typename Compare = std::less<T>>
+	template <typename T, typename K>
 	class AVLTree {
 	public:
 		using size_type = std::size_t;
 		using height_type = std::size_t;
 		using bf_type = int;
-		using value_compare = Compare;
 		using map_type = T;
 		using key_type = K;
 		using value_type = node<map_type, key_type>;
@@ -221,17 +238,17 @@ namespace fefu {
 			iterator current = this->begin();
 			iterator end = this->end();
 			std::vector<value_type*> stack;
-			while (current != end) {
+			while (current.value != end.value) {
 				stack.push_back(current.value);
 				++current;
 			}
 			while (!stack.empty()) {
 				delete stack[stack.size() - 1];
-				stack[stack.size() - 1] = nullptr;
 				stack.pop_back();	
 			}
 			delete current.value;
 			current.value = nullptr;
+			end.value == nullptr;
 		}
 
 		bool empty() {
@@ -250,7 +267,7 @@ namespace fefu {
 			while (current->left) {
 				current = current->left;
 			}
-			return iterator(current);
+			return iterator(current, &mutex);
 		}
 
 		iterator end() {
@@ -259,26 +276,12 @@ namespace fefu {
 			while (current->right) {
 				current = current->right;
 			}
-			return iterator(current);
+			return iterator(current, &mutex);
 		}
 
 		void insert(map_type value, key_type key) {
 			std::unique_lock<std::shared_mutex> lock(mutex);
-			value_type *parent_node = find_node(key);
-			if (parent_node->key != key || parent_node->node_status == status::END) {
-				value_type* new_node = new value_type(value, key, parent_node);
-				if (_compare(new_node->key, parent_node->key)) {
-					parent_node->left = new_node;
-				} else {
-					parent_node->right = new_node;
-				}
-				if (parent_node->node_status == status::END && parent_node->right) {
-					swap(parent_node, new_node);
-					new_node = parent_node;
-				}
-				++set_size;
-				balance_insert(new_node);
-			}
+			insert_inner(value, key);
 		}
 
 		void insert(std::pair<map_type, key_type> pair) {
@@ -293,24 +296,63 @@ namespace fefu {
 
 		iterator find(key_type key) {
 			std::shared_lock<std::shared_mutex> lock(mutex);
-			auto it = iterator(find_node(key));
+			auto it = iterator(find_node(key), &mutex);
 			if (it.value->key != key) {
+				lock.unlock();
 				return end();
 			}
+			lock.unlock();
 			return it;
 		}
 
 		void erase(key_type key) {
-			if (!empty()) {
-				std::unique_lock<std::shared_mutex> lock(mutex);
+			std::unique_lock<std::shared_mutex> lock(mutex);
+			erase_inner(key);
+		}
+
+	private:
+		value_type *root = nullptr;
+		size_type set_size = 0;
+		std::shared_mutex mutex;
+
+		bool empty_inner() {
+			return set_size == 0;
+		}
+
+		size_type size_inner() {
+			return set_size;
+		}
+
+		void insert_inner(map_type value, key_type key) {
+			value_type* parent_node = find_node(key);
+			if (parent_node->key != key || parent_node->node_status == status::END) {
+				value_type* new_node = new value_type(value, key, parent_node);
+				if (new_node->key < parent_node->key) {
+					parent_node->left = new_node;
+				}
+				else {
+					parent_node->right = new_node;
+				}
+				if (parent_node->node_status == status::END && parent_node->right) {
+					swap(parent_node, new_node);
+					new_node = parent_node;
+				}
+				++set_size;
+				balance_insert(new_node);
+			}
+		}
+
+		void erase_inner(key_type key) {
+			if (!empty_inner()) {
 				value_type* unit = find_node(key);
 				if (unit->key == key && unit->node_status == status::ACTIVE) {
 					--set_size;
 					value_type* lower_unit = unit;
-					
+
 					if (unit->left) {
 						lower_unit = get_lower_right_child(unit->left);
-					} else if (unit->right) {
+					}
+					else if (unit->right) {
 						lower_unit = get_lower_left_child(unit->right);
 					}
 
@@ -342,12 +384,6 @@ namespace fefu {
 				}
 			}
 		}
-
-	private:
-		value_type *root = nullptr;
-		size_type set_size = 0;
-		value_compare _compare;
-		std::shared_mutex mutex;
 
 		void delete_node(value_type *unit) {
 			unit->node_status = status::DELETED;
@@ -598,7 +634,7 @@ namespace fefu {
 		value_type *find_node(key_type key) {
 			value_type *current = root;
 			while (current && current->key != key) {
-				if (_compare(key, current->key)) {
+				if (key < current->key) {
 					if (!current->left) {
 						return current;
 					}
